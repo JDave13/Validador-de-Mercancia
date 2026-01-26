@@ -7,27 +7,28 @@ function App() {
   const [step, setStep] = useState('capture'); // capture | processing | results
   const [invoiceData, setInvoiceData] = useState(null);
   const [validationResult, setValidationResult] = useState(null);
-  const [matchResults, setMatchResults] = useState(null);
+  const [matchResults, setMatchResults] = useState([]); 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  // Callback cuando se captura la imagen y se procesa OCR
-  const handleImageCapture = async (ocrResult) => {
-    setInvoiceData(ocrResult);
+  // ✅ LÓGICA CORREGIDA Y BLINDADA
+  const handleImageCapture = async (imageFile) => {
+    // 1. Cambiamos estado visual a "Procesando"
     setStep('processing');
     setLoading(true);
     setError(null);
 
     try {
-      // Llamar al endpoint de validación
-      const response = await fetch('http://localhost:8000/validate', {
+      console.log("📸 Enviando imagen al backend...");
+
+      // 2. Preparamos los datos como Archivo (Multipart)
+      const formData = new FormData();
+      formData.append('invoice', imageFile); 
+
+      // 3. Petición al Backend
+      const response = await fetch('http://localhost:8000/process-invoice', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          invoice_data: ocrResult
-        })
+        body: formData, 
       });
 
       if (!response.ok) {
@@ -36,16 +37,33 @@ function App() {
       }
 
       const result = await response.json();
+      console.log("📦 Respuesta del Backend:", result);
 
       if (result.success) {
-        setValidationResult(result.validation);
-        setMatchResults(result.match_results);
+        // --- AQUÍ ESTABA EL ERROR, AHORA ESTÁ ARREGLADO ---
+        // Definimos 'datosSeguros' buscando la info en cualquier lugar posible
+        // Si no está en 'validation', busca en 'invoice', 'data' o en la raíz.
+        const datosSeguros = result.validation || result.invoice || result.data || result;
+
+        // 4. Guardamos los datos recibidos
+        setValidationResult(datosSeguros); 
+        
+        // Buscamos los items/match_results con seguridad
+        setMatchResults(result.match_results || datosSeguros.items || []);
+        
+        // Guardamos datos básicos de la factura usando ?. para que no explote si falta algo
+        setInvoiceData({
+            proveedor: datosSeguros?.proveedor_factura || datosSeguros?.proveedor || "Proveedor Desconocido",
+            total_factura: datosSeguros?.total_factura || 0
+        });
+
         setStep('results');
       } else {
-        throw new Error('Validación falló');
+        throw new Error(result.mensaje || 'Error desconocido');
       }
+
     } catch (err) {
-      console.error('Error:', err);
+      console.error('❌ Error en el flujo:', err);
       setError(err.message);
       setStep('capture');
     } finally {
@@ -58,13 +76,13 @@ function App() {
     setStep('capture');
     setInvoiceData(null);
     setValidationResult(null);
-    setMatchResults(null);
+    setMatchResults([]);
     setError(null);
   };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
-      {/* Header */}
+      {/* Header Original */}
       <header className="bg-white shadow-md">
         <div className="max-w-7xl mx-auto px-4 py-6">
           <h1 className="text-3xl font-bold text-gray-900">
@@ -78,9 +96,11 @@ function App() {
 
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 py-8">
-        {/* Indicador de pasos */}
+        
+        {/* Indicador de pasos Original */}
         <div className="mb-8 flex justify-center">
           <div className="flex items-center gap-4">
+            {/* Paso 1: Capturar */}
             <div className={`flex items-center gap-2 ${step === 'capture' ? 'text-blue-600 font-bold' : 'text-gray-400'}`}>
               <div className={`w-8 h-8 rounded-full flex items-center justify-center ${step === 'capture' ? 'bg-blue-600 text-white' : 'bg-gray-300'}`}>
                 1
@@ -90,6 +110,7 @@ function App() {
             
             <div className="w-12 h-1 bg-gray-300"></div>
             
+            {/* Paso 2: Validando */}
             <div className={`flex items-center gap-2 ${step === 'processing' ? 'text-blue-600 font-bold' : 'text-gray-400'}`}>
               <div className={`w-8 h-8 rounded-full flex items-center justify-center ${step === 'processing' ? 'bg-blue-600 text-white' : 'bg-gray-300'}`}>
                 2
@@ -99,6 +120,7 @@ function App() {
             
             <div className="w-12 h-1 bg-gray-300"></div>
             
+            {/* Paso 3: Resultados */}
             <div className={`flex items-center gap-2 ${step === 'results' ? 'text-blue-600 font-bold' : 'text-gray-400'}`}>
               <div className={`w-8 h-8 rounded-full flex items-center justify-center ${step === 'results' ? 'bg-blue-600 text-white' : 'bg-gray-300'}`}>
                 3
@@ -108,10 +130,10 @@ function App() {
           </div>
         </div>
 
-        {/* Error Message */}
+        {/* Mensaje de Error */}
         {error && (
-          <div className="mb-6 bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded">
-            <p className="font-bold">Error</p>
+          <div className="mb-6 bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded shadow-sm">
+            <p className="font-bold flex items-center gap-2">⚠️ Error</p>
             <p>{error}</p>
           </div>
         )}
@@ -124,40 +146,28 @@ function App() {
         {/* Step: Processing */}
         {step === 'processing' && (
           <div className="flex flex-col items-center justify-center py-12">
-            <Loader2 className="animate-spin text-blue-600 mb-4" size={64} />
+            <Loader2 className="animate-spin text-blue-600 mb-6" size={80} />
             <h2 className="text-2xl font-bold text-gray-800 mb-2">
-              Validando factura...
+              Analizando Factura...
             </h2>
-            <p className="text-gray-600">
-              Esto puede tomar unos segundos
+            <p className="text-gray-600 text-center max-w-md">
+              Estamos leyendo la imagen con IA y cruzando los datos con el inventario actual.
             </p>
-            
-            {invoiceData && (
-              <div className="mt-8 bg-white p-6 rounded-lg shadow max-w-md">
-                <h3 className="font-bold mb-2">Datos extraídos:</h3>
-                <div className="text-sm space-y-1">
-                  <p><span className="font-medium">Proveedor:</span> {invoiceData.proveedor}</p>
-                  <p><span className="font-medium">Fecha:</span> {invoiceData.fecha}</p>
-                  <p><span className="font-medium">Total:</span> ${invoiceData.total_factura?.toLocaleString('es-CO')}</p>
-                  <p><span className="font-medium">Items:</span> {invoiceData.items?.length}</p>
-                </div>
-              </div>
-            )}
           </div>
         )}
 
         {/* Step: Results */}
-        {step === 'results' && (
-          <div>
+        {step === 'results' && validationResult && (
+          <div className="animate-fade-in-up">
             <ValidationResults 
               validation={validationResult} 
               matchResults={matchResults}
             />
             
-            <div className="flex justify-center mt-8">
+            <div className="flex justify-center mt-10 pb-12">
               <button
                 onClick={handleNewInvoice}
-                className="bg-blue-600 text-white px-8 py-3 rounded-lg hover:bg-blue-700 transition font-medium"
+                className="bg-blue-600 text-white px-8 py-3 rounded-lg hover:bg-blue-700 transition font-medium shadow-lg hover:shadow-xl transform hover:-translate-y-1 flex items-center gap-2"
               >
                 📸 Validar Nueva Factura
               </button>
@@ -167,9 +177,9 @@ function App() {
       </main>
 
       {/* Footer */}
-      <footer className="bg-white border-t mt-12">
-        <div className="max-w-7xl mx-auto px-4 py-6 text-center text-gray-600 text-sm">
-          <p>Validador de Mercancía v1.0 | Powered by Gemini AI & FastAPI</p>
+      <footer className="bg-white border-t mt-auto">
+        <div className="max-w-7xl mx-auto px-4 py-6 text-center text-gray-500 text-sm">
+          <p>Validador de Mercancía v1.0 | Powered by Gemini 2.5 Flash Lite</p>
         </div>
       </footer>
     </div>

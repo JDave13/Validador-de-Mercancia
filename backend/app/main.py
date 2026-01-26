@@ -1,252 +1,224 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional
-import os
-from dotenv import load_dotenv
-
-# Importar servicios
-from app.services.gemini_service import gemini_service
+from app.services.ai_service import ai_service
 from app.services.matching_service import matching_service
-from app.services.validation_service import validation_service
-from app.services.email_service import email_service
+from app.services.email_service import email_service 
 from app.database.mongodb import db
+from datetime import datetime, timezone
+import json
+import uuid 
+import re 
 
-load_dotenv()
+app = FastAPI()
 
-app = FastAPI(title="Validador de Mercancía API", version="1.0.0")
-
-# Configurar CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
-    allow_credentials=True,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ========== MODELOS PYDANTIC ==========
+def clean_price(price_str):
+    if not price_str: return 0.0
+    s = str(price_str).replace('$', '').replace(' ', '').strip()
+    if re.match(r'^\d{1,3}(\.\d{3})+$', s):
+        s = s.replace('.', '') 
+    elif ',' in s:
+        s = s.replace('.', '').replace(',', '.') 
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
 
-class InvoiceItem(BaseModel):
-    producto: str
-    cantidad: float
-    unidad: str = "unidades"
-    precio_unitario: float
-    total: float
+def fix_mongo_id(document):
+    if not document: return None
+    if isinstance(document, list):
+        return [fix_mongo_id(d) for d in document]
+    if isinstance(document, dict):
+        d = document.copy()
+        if "_id" in d:
+            d["_id"] = str(d["_id"])
+        for k, v in d.items():
+            if isinstance(v, (dict, list)):
+                d[k] = fix_mongo_id(v)
+        return d
+    return document
 
-class InvoiceData(BaseModel):
-    proveedor: str
-    fecha: str
-    numero_factura: Optional[str] = None
-    items: List[InvoiceItem]
-    subtotal: Optional[float] = 0
-    iva: Optional[float] = 0
-    total_factura: float
+@app.post("/process-invoice")
+async def process_invoice(invoice: UploadFile = File(...)):
+    print(f"📥 Procesando imagen: {invoice.filename}")
+    
+    # 1. OCR
+    invoice_content = await invoice.read()
+    ocr_result = await ai_service.extract_invoice_data(invoice_content)
+    
+    if not ocr_result["success"]:
+        raise HTTPException(status_code=500, detail=ocr_result.get("error"))
+    
+    invoice_data = ocr_result["invoice_data"]
+    items_factura = invoice_data.get("items", [])
+    
+    # ID & Duplicate Check
+    ocr_id = invoice_data.get("invoice_number")
+    if ocr_id and str(ocr_id).strip().upper() not in ["N/A", "NONE", ""]:
+        invoice_id = str(ocr_id).strip()
+        es_id_real = True
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d")
+        unique_suffix = str(uuid.uuid4())[:6].upper()
+        invoice_id = f"AUTO-{timestamp}-{unique_suffix}"
+        es_id_real = False
 
-class ValidationRequest(BaseModel):
-    invoice_data: InvoiceData
-    purchase_order_id: Optional[str] = None
+    if es_id_real:
+        # Bloqueamos solo si ya existe y fue ROJA anteriormente
+        prev = db.validations.find_one({"factura_id": invoice_id, "status": "ROJO"})
+        if prev:
+            raise HTTPException(status_code=409, detail=f"Factura {invoice_id} ya rechazada.")
 
-# ========== ENDPOINTS ==========
+    proveedor_detectado = invoice_data.get("proveedor") or "Proveedor Desconocido"
+    total_facturado_ocr = clean_price(invoice_data.get("total_factura"))
 
-@app.get("/")
-async def root():
-    return {
-        "app": "Validador de Mercancía",
-        "version": "1.0.0",
-        "status": "running",
-        "endpoints": {
-            "ocr": "/upload-invoice",
-            "validation": "/validate",
-            "visual": "/inspect-visual",
-            "purchase_orders": "/purchase-orders",
-            "stats": "/stats"
+    # 2. MATCHING
+    catalog_products = list(db.products.find({}))
+    matches = await matching_service.match_all_items(items_factura, catalog_products)
+
+    # 3. CALCULOS
+    items_procesados = []
+    alertas = []
+    items_validos_count = 0
+    items_totales_relevantes = 0
+    total_esperado_calculado = 0.0 
+
+    for match in matches:
+        item_factura = match.get("original", {})
+        producto_catalogo = match.get("db_item")
+        score = match.get("score", 0)
+        
+        nombre_factura = item_factura.get("producto") or item_factura.get("descripcion") or "Item"
+        
+        try:
+            cant = float(item_factura.get("cantidad") or 0)
+        except:
+            cant = 0.0
+
+        precio_factura = clean_price(item_factura.get("precio_unitario"))
+        
+        precio_db = 0.0
+        if producto_catalogo:
+            p_raw = producto_catalogo.get("precio") or producto_catalogo.get("costo")
+            precio_db = clean_price(str(p_raw)) if p_raw else 0.0
+
+        # Si hay precio DB, se usa para "Esperado". Si no, asumimos el de factura para no distorsionar.
+        precio_ref = precio_db if precio_db > 0 else precio_factura
+        total_esperado_calculado += (cant * precio_ref)
+
+        es_irrelevante = "BOLSA" in nombre_factura.upper() or "IMPOCONSUMO" in nombre_factura.upper()
+
+        detalles = {
+            "product_name": nombre_factura,
+            "matched_name": producto_catalogo["nombre"] if producto_catalogo else "No encontrado",
+            "quantity": cant,
+            "unit_price": precio_factura,
+            "expected_price": precio_db,
+            "score": score,
+            "match_found": match.get("match_found", False),
+            "status": "UNKNOWN"
         }
+
+        if producto_catalogo:
+            inv = db.inventory.find_one({"producto": producto_catalogo["nombre"]})
+            if inv:
+                detalles["status"] = "OK"
+                if not es_irrelevante: items_validos_count += 1
+            else:
+                detalles["status"] = "NEW_ITEM"
+                if not es_irrelevante: alertas.append(f"Nuevo item: {nombre_factura}")
+        else:
+            if not es_irrelevante: alertas.append(f"Desconocido: {nombre_factura}")
+
+        if not es_irrelevante:
+            items_totales_relevantes += 1
+        items_procesados.append(detalles)
+
+    # Totales Finales
+    total_final = total_facturado_ocr if total_facturado_ocr > 0 else sum(i["quantity"] * i["unit_price"] for i in items_procesados)
+    
+    desviacion = 0.0
+    if total_esperado_calculado > 0:
+        desviacion = ((total_final - total_esperado_calculado) / total_esperado_calculado) * 100
+
+    # 4. SEMÁFORO (LÓGICA ACTUALIZADA)
+    if items_totales_relevantes > 0:
+        ratio_exito = items_validos_count / items_totales_relevantes
+    else:
+        ratio_exito = 0.0 if len(items_factura) > 0 else 1.0
+
+    # Definición estricta de estados
+    # 🔴 ROJO: Desviación > 10% O mal reconocimiento (<50%)
+    if abs(desviacion) > 10.0 or ratio_exito < 0.5:
+        estado_validacion = "ROJO"
+        mensaje_validacion = "Discrepancias críticas (>10%)"
+    
+    # 🟡 AMARILLO: Desviación entre 5% y 10% (inclusive 10, exclusivo 5)
+    elif 5.0 < abs(desviacion) <= 10.0:
+        estado_validacion = "AMARILLO"
+        mensaje_validacion = "Revisión necesaria (5% - 10%)"
+    
+    # 🟢 VERDE: Desviación <= 5% (y buen ratio)
+    else:
+        estado_validacion = "VERDE"
+        mensaje_validacion = "Validación Exitosa"
+
+    # 5. GUARDAR Y NOTIFICAR
+    resumen = {
+        "factura_id": invoice_id,
+        "es_id_generado": not es_id_real,
+        "fecha": datetime.now(timezone.utc),
+        "status": estado_validacion,
+        "mensaje": mensaje_validacion,
+        "proveedor": proveedor_detectado,
+        "items": items_procesados,
+        "alertas": alertas,
+        "totales": {
+            "facturado": total_final,
+            "esperado": total_esperado_calculado,
+            "diferencia": total_final - total_esperado_calculado
+        },
+        "desviacion_porcentual": desviacion,
+        "matchResults": items_procesados
+    }
+    
+    try:
+        db.validations.insert_one(resumen)
+    except Exception as e:
+        print(f"⚠️ Error Mongo: {e}")
+
+    # --- CORRECCIÓN DE EMAIL ---
+    if estado_validacion in ["ROJO", "AMARILLO"]:
+        print(f"📧 Enviando alerta por estado: {estado_validacion}")
+        try:
+            # AGREGADO AWAIT: Es probable que send_alert sea asíncrono
+            # Si no es async, el await no estorba mucho en versiones modernas, 
+            # pero si lo es y faltaba, era la causa del error.
+            if hasattr(email_service.send_alert, '__await__') or  \
+               (hasattr(email_service, 'send_alert') and hasattr(email_service.send_alert, '__code__') and \
+                email_service.send_alert.__code__.co_flags & 0x80):
+                 await email_service.send_alert(resumen)
+            else:
+                 email_service.send_alert(resumen)
+                 
+        except Exception as e:
+            print(f"⚠️ Error enviando email: {e}")
+
+    return {
+        "success": True,
+        "mensaje": mensaje_validacion,
+        "status": estado_validacion,
+        "factura_id": invoice_id,
+        "data": fix_mongo_id(resumen)
     }
 
-@app.post("/upload-invoice")
-async def upload_invoice(file: UploadFile = File(...)):
-    """
-    Endpoint 1: OCR de factura con Gemini
-    Recibe imagen, extrae datos estructurados
-    """
-    try:
-        # Validar tipo de archivo
-        if not file.content_type.startswith("image/"):
-            raise HTTPException(400, "Solo se permiten imágenes")
-        
-        # Leer imagen
-        image_data = await file.read()
-        
-        # Extraer datos con Gemini OCR
-        result = await gemini_service.extract_invoice_data(image_data)
-        
-        if not result["success"]:
-            raise HTTPException(500, f"Error en OCR: {result.get('error')}")
-        
-        invoice_data = result["data"]
-        
-        # Buscar orden de compra del proveedor
-        purchase_order = db.get_purchase_order_by_supplier(invoice_data["proveedor"])
-        
-        return {
-            "success": True,
-            "invoice_data": invoice_data,
-            "purchase_order_found": purchase_order is not None,
-            "purchase_order_id": str(purchase_order["_id"]) if purchase_order else None,
-            "message": "Factura procesada exitosamente"
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"Error procesando factura: {str(e)}")
-
-@app.post("/validate")
-async def validate_invoice(request: ValidationRequest):
-    """
-    Endpoint 2: Validación completa
-    Fuzzy matching + validación financiera + semáforo
-    """
-    try:
-        invoice_data = request.invoice_data.dict()
-        
-        # 1. Buscar orden de compra
-        if request.purchase_order_id:
-            from bson import ObjectId
-            purchase_order = db.purchase_orders.find_one({"_id": ObjectId(request.purchase_order_id)})
-        else:
-            purchase_order = db.get_purchase_order_by_supplier(invoice_data["proveedor"])
-        
-        if not purchase_order:
-            raise HTTPException(404, f"No hay orden de compra para el proveedor '{invoice_data['proveedor']}'")
-        
-        # 2. Fuzzy matching de productos
-        invoice_items = [item for item in invoice_data["items"]]
-        po_items = purchase_order.get("items", [])
-        
-        match_results = await matching_service.match_all_items(invoice_items, po_items)
-        
-        # 3. Validación financiera completa
-        validation_result = validation_service.validate_invoice_complete(
-            invoice_data,
-            purchase_order,
-            match_results
-        )
-        
-        # 4. Guardar validación en BD
-        validation_id = db.save_validation(validation_result)
-        
-        # 5. Guardar factura
-        invoice_data["validacion"] = {
-            "validation_id": validation_id,
-            "status": validation_result["status"],
-            "aprobado": validation_result["aprobado"]
-        }
-        invoice_id = db.create_invoice(invoice_data)
-        
-        # 6. Enviar notificaciones si es necesario
-        if validation_result.get("requiere_notificacion"):
-            email_service.send_alert(validation_result)
-        elif validation_result["aprobado"]:
-            # Actualizar estado de orden de compra
-            db.update_purchase_order_status(str(purchase_order["_id"]), "completada")
-        
-        return {
-            "success": True,
-            "validation": validation_result,
-            "invoice_id": invoice_id,
-            "match_results": match_results
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"Error en validación: {str(e)}")
-
-@app.post("/inspect-visual")
-async def inspect_visual(
-    file: UploadFile = File(...),
-    product_type: str = "general"
-):
-    """
-    Endpoint 3: Inspector Visual con Gemini Vision
-    Analiza calidad del producto
-    """
-    try:
-        if not file.content_type.startswith("image/"):
-            raise HTTPException(400, "Solo se permiten imágenes")
-        
-        image_data = await file.read()
-        
-        # Analizar calidad visual
-        result = await gemini_service.analyze_product_quality(image_data, product_type)
-        
-        if not result["success"]:
-            raise HTTPException(500, f"Error en análisis: {result.get('error')}")
-        
-        quality_data = result["data"]
-        
-        return {
-            "success": True,
-            "quality": quality_data,
-            "recommendation": "APROBAR" if quality_data["apto_venta"] else "RECHAZAR"
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"Error inspeccionando producto: {str(e)}")
-
-# ========== ENDPOINTS DE GESTIÓN ==========
-
-@app.get("/purchase-orders")
-async def get_purchase_orders():
-    """Obtiene todas las órdenes de compra"""
-    try:
-        orders = db.get_all_purchase_orders()
-        # Convertir ObjectId a string
-        for order in orders:
-            order["_id"] = str(order["_id"])
-        return {"success": True, "orders": orders}
-    except Exception as e:
-        raise HTTPException(500, str(e))
-
-@app.post("/purchase-orders")
-async def create_purchase_order(order_data: dict):
-    """Crea una nueva orden de compra"""
-    try:
-        order_id = db.create_purchase_order(order_data)
-        return {"success": True, "order_id": order_id}
-    except Exception as e:
-        raise HTTPException(500, str(e))
-
-@app.get("/stats")
-async def get_stats():
-    """Obtiene estadísticas de validaciones"""
-    try:
-        stats = db.get_validation_stats(days=30)
-        return {"success": True, "stats": stats}
-    except Exception as e:
-        raise HTTPException(500, str(e))
-
-@app.get("/invoices/{proveedor}")
-async def get_invoices_by_supplier(proveedor: str):
-    """Obtiene facturas de un proveedor"""
-    try:
-        invoices = db.get_invoices_by_supplier(proveedor)
-        for inv in invoices:
-            inv["_id"] = str(inv["_id"])
-        return {"success": True, "invoices": invoices}
-    except Exception as e:
-        raise HTTPException(500, str(e))
-
-# ========== EVENTO DE CIERRE ==========
-
-@app.on_event("shutdown")
-def shutdown_event():
-    db.close()
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+@app.get("/inventory")
+async def get_inventory():
+    stock = list(db.inventory.find({}))
+    return {"inventory": fix_mongo_id(stock)}

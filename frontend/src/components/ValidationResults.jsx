@@ -1,174 +1,216 @@
-import { CheckCircle, AlertTriangle, XCircle, TrendingUp, Package } from 'lucide-react';
+import React from 'react';
+import { CheckCircle, AlertTriangle, AlertOctagon, FileText, Package, ArrowRight } from 'lucide-react';
 
 export default function ValidationResults({ validation, matchResults }) {
+  // 1. Protección inicial
   if (!validation) {
-    return null;
+    return (
+      <div className="flex flex-col items-center justify-center p-12 text-gray-500 bg-gray-50 rounded-lg border-2 border-dashed border-gray-200">
+        <Package size={48} className="mb-4 text-gray-400" />
+        <p className="text-lg font-medium">Esperando resultados de validación...</p>
+      </div>
+    );
   }
 
-  const { status, mensaje, desviacion_porcentual, totales, discrepancias, detalle_items } = validation;
+  // 2. Extracción de datos
+  const { 
+    proveedor = 'Desconocido', 
+    desviacion_porcentual = 0,
+    status = 'ROJO' // Leemos el status que viene del Backend (VERDE, AMARILLO, ROJO)
+  } = validation;
 
-  // Determinar color y emoji según status
+  const totales = validation.totales || validation.totals || { esperado: 0, facturado: 0, diferencia: 0 };
+  const items = matchResults?.length > 0 ? matchResults : (validation.items || []);
+
+  // 3. Mapeo de Estados (Backend -> Frontend)
+  // Backend envía: "VERDE", "AMARILLO", "ROJO"
+  // Frontend usa claves: "APROBADA", "AMARILLO", "ALERTA"
+  
+  let currentStatusKey = 'ALERTA'; // Default por seguridad
+
+  if (status === 'VERDE') {
+      currentStatusKey = 'APROBADA';
+  } else if (status === 'AMARILLO') {
+      currentStatusKey = 'AMARILLO';
+  } else {
+      currentStatusKey = 'ALERTA'; // ROJO
+  }
+
+  // 4. Configuración visual
   const statusConfig = {
-    VERDE: {
-      color: 'bg-green-100 border-green-500 text-green-900',
-      icon: <CheckCircle className="text-green-600" size={48} />,
-      emoji: '✅',
-      title: 'Factura Aprobada'
+    APROBADA: {
+      theme: 'bg-green-600 border-green-600',
+      icon: <CheckCircle size={32} className="text-white" />,
+      text: 'Validación Exitosa',
+      subtext: 'La factura coincide con la orden de compra (< 5%)'
     },
     AMARILLO: {
-      color: 'bg-yellow-100 border-yellow-500 text-yellow-900',
-      icon: <AlertTriangle className="text-yellow-600" size={48} />,
-      emoji: '⚠️',
-      title: 'Requiere Revisión'
+      theme: 'bg-yellow-500 border-yellow-500',
+      icon: <AlertTriangle size={32} className="text-white" />,
+      text: 'Revisión Necesaria',
+      subtext: 'Desviación moderada detectada (5% - 10%)'
     },
-    ROJO: {
-      color: 'bg-red-100 border-red-500 text-red-900',
-      icon: <XCircle className="text-red-600" size={48} />,
-      emoji: '🔴',
-      title: 'Factura Rechazada'
+    ALERTA: {
+      theme: 'bg-red-600 border-red-600',
+      icon: <AlertOctagon size={32} className="text-white" />,
+      text: 'Discrepancia Crítica',
+      subtext: 'Diferencias mayores al 10% o error de lectura'
     }
   };
 
-  const config = statusConfig[status] || statusConfig.AMARILLO;
+  const config = statusConfig[currentStatusKey];
+
+  // 5. Helpers de formato
+  const formatMoney = (val) => {
+    const num = Number(val);
+    return isNaN(num) ? '$0' : `$ ${num.toLocaleString('es-CO')}`;
+  };
+
+  const formatPercentage = (val) => {
+    const num = Number(val);
+    // Si viene 0.05 es 5%, si viene 5.0 es 5%
+    // NOTA: Cambiado Math.round por toFixed(2) para ver decimales (3.80% en vez de 4%)
+    const percent = Math.abs(num) <= 1 && num !== 0 ? num * 100 : num;
+    return `${Number(percent).toFixed(2)}%`;
+  };
 
   return (
-    <div className="w-full max-w-4xl mx-auto p-6 space-y-6">
-      {/* Header con status */}
-      <div className={`border-l-4 p-6 rounded-lg ${config.color}`}>
-        <div className="flex items-center gap-4">
-          {config.icon}
-          <div>
-            <h2 className="text-2xl font-bold">{config.emoji} {config.title}</h2>
-            <p className="text-sm mt-1">{mensaje}</p>
+    <div className="w-full max-w-5xl mx-auto space-y-6 animate-fade-in-up">
+      
+      {/* HEADER PRINCIPAL DINÁMICO */}
+      <div className={`rounded-xl shadow-lg overflow-hidden border-2 ${config.theme} text-white transition-all duration-300`}>
+        <div className="p-6 flex justify-between items-center">
+          <div className="flex items-center gap-4">
+            <div className="bg-white/20 p-3 rounded-full backdrop-blur-sm">
+              {config.icon}
+            </div>
+            <div>
+              <h2 className="text-3xl font-bold uppercase tracking-wide">{config.text}</h2>
+              <p className="opacity-90 flex items-center gap-2 text-lg">
+                <FileText size={18} /> {proveedor}
+              </p>
+              <p className="text-sm opacity-75 mt-1">{config.subtext}</p>
+            </div>
+          </div>
+          <div className="text-right bg-white/20 p-4 rounded-lg backdrop-blur-sm min-w-[150px]">
+            <p className="text-xs uppercase tracking-widest opacity-80 mb-1">Desviación Total</p>
+            <p className="text-3xl font-bold">{formatPercentage(desviacion_porcentual)}</p>
+          </div>
+        </div>
+
+        {/* Totales - Siempre visibles */}
+        <div className="bg-white text-gray-800 p-6 grid grid-cols-1 md:grid-cols-3 gap-4 divide-y md:divide-y-0 md:divide-x divide-gray-100">
+          <div className="text-center p-2">
+            <p className="text-gray-500 text-sm mb-1 uppercase tracking-wider">Esperado (Bodega)</p>
+            <p className="text-2xl font-bold text-gray-700">{formatMoney(totales.esperado)}</p>
+          </div>
+          <div className="text-center p-2">
+            <p className="text-gray-500 text-sm mb-1 uppercase tracking-wider">Facturado Real</p>
+            <p className="text-2xl font-bold text-blue-900">{formatMoney(totales.facturado)}</p>
+          </div>
+          <div className="text-center p-2">
+            <p className="text-gray-500 text-sm mb-1 uppercase tracking-wider">Diferencia</p>
+            <p className={`text-2xl font-bold ${totales.diferencia > 0 ? 'text-red-600' : 'text-green-600'}`}>
+              {totales.diferencia > 0 ? '+' : ''}{formatMoney(totales.diferencia)}
+            </p>
           </div>
         </div>
       </div>
 
-      {/* Métricas principales */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-white p-4 rounded-lg shadow border">
-          <div className="flex items-center gap-2 text-gray-600 mb-2">
-            <TrendingUp size={20} />
-            <span className="text-sm font-medium">Desviación</span>
-          </div>
-          <p className="text-3xl font-bold text-gray-900">
-            {desviacion_porcentual.toFixed(2)}%
-          </p>
+      {/* TABLA DE DETALLE */}
+      <div className="bg-white rounded-xl shadow-md border border-gray-200 overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
+          <h3 className="font-bold text-gray-700">Análisis Línea por Línea</h3>
         </div>
+        
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm text-left">
+            <thead className="bg-gray-100 text-gray-600 border-b border-gray-200 uppercase text-xs tracking-wider">
+              <tr>
+                <th className="px-6 py-4 font-semibold">Producto Detectado</th>
+                <th className="px-6 py-4 font-semibold text-center">Cant.</th>
+                <th className="px-6 py-4 font-semibold text-right">Precio Factura</th>
+                <th className="px-6 py-4 font-semibold text-right text-gray-500">Precio Bodega</th>
+                <th className="px-6 py-4 font-semibold text-center">Similitud</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {items.map((item, idx) => {
+                const nombre = item.product_name || item.original_name || "Item Desconocido";
+                const matchDB = item.matched_name || "";
+                
+                const precioFactura = Number(item.unit_price || 0);
+                const precioEsperado = Number(item.expected_price || 0);
+                const cantidad = item.quantity || 0;
+                const similarity = item.similarity || item.score || 0;
+                
+                // LÓGICA CRÍTICA PARA FILAS (Individual):
+                // Aquí sí mantenemos la lógica visual de "alerta" por ítem individual
+                let sobreprecioPercent = 0;
+                let isPriceError = false;
 
-        <div className="bg-white p-4 rounded-lg shadow border">
-          <div className="flex items-center gap-2 text-gray-600 mb-2">
-            <Package size={20} />
-            <span className="text-sm font-medium">Total Esperado</span>
-          </div>
-          <p className="text-2xl font-bold text-gray-900">
-            ${totales.esperado.toLocaleString('es-CO')}
-          </p>
-        </div>
+                if (precioEsperado > 0) {
+                  if (precioFactura > precioEsperado) {
+                    sobreprecioPercent = ((precioFactura - precioEsperado) / precioEsperado) * 100;
+                    if (sobreprecioPercent > 5) isPriceError = true; 
+                  }
+                }
 
-        <div className="bg-white p-4 rounded-lg shadow border">
-          <div className="flex items-center gap-2 text-gray-600 mb-2">
-            <Package size={20} />
-            <span className="text-sm font-medium">Total Facturado</span>
-          </div>
-          <p className="text-2xl font-bold text-gray-900">
-            ${totales.facturado.toLocaleString('es-CO')}
-          </p>
-        </div>
-      </div>
+                const rowClass = isPriceError 
+                  ? 'bg-red-50 hover:bg-red-100' 
+                  : 'hover:bg-gray-50';
 
-      {/* Discrepancias */}
-      {discrepancias && discrepancias.length > 0 && (
-        <div className="bg-white p-6 rounded-lg shadow border">
-          <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
-            <AlertTriangle className="text-yellow-600" size={24} />
-            Discrepancias Encontradas ({discrepancias.length})
-          </h3>
-          
-          <div className="space-y-3">
-            {discrepancias.map((disc, idx) => {
-              const severityColors = {
-                ALTA: 'border-red-500 bg-red-50',
-                MEDIA: 'border-yellow-500 bg-yellow-50',
-                BAJA: 'border-blue-500 bg-blue-50'
-              };
-              
-              return (
-                <div 
-                  key={idx}
-                  className={`border-l-4 p-3 rounded ${severityColors[disc.severidad] || 'border-gray-500 bg-gray-50'}`}
-                >
-                  <div className="flex items-start gap-2">
-                    <span className="font-bold text-sm">{disc.tipo}:</span>
-                    <span className="text-sm">{disc.mensaje}</span>
-                  </div>
-                  {disc.porcentaje && (
-                    <span className="text-xs text-gray-600 ml-2">
-                      ({disc.porcentaje.toFixed(1)}% de diferencia)
-                    </span>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Detalle de items */}
-      {detalle_items && detalle_items.length > 0 && (
-        <div className="bg-white p-6 rounded-lg shadow border">
-          <h3 className="text-xl font-bold mb-4">Detalle de Productos</h3>
-          
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-100">
-                <tr>
-                  <th className="p-2 text-left">Producto Factura</th>
-                  <th className="p-2 text-left">Producto Pedido</th>
-                  <th className="p-2 text-center">Match %</th>
-                  <th className="p-2 text-center">Estado</th>
-                </tr>
-              </thead>
-              <tbody>
-                {detalle_items.map((item, idx) => (
-                  <tr key={idx} className="border-b hover:bg-gray-50">
-                    <td className="p-2">{item.producto_factura}</td>
-                    <td className="p-2">{item.producto_pedido}</td>
-                    <td className="p-2 text-center">
-                      <span className={`px-2 py-1 rounded text-xs font-bold ${
-                        item.similarity >= 0.9 ? 'bg-green-200 text-green-800' :
-                        item.similarity >= 0.8 ? 'bg-yellow-200 text-yellow-800' :
-                        'bg-red-200 text-red-800'
-                      }`}>
-                        {(item.similarity * 100).toFixed(0)}%
-                      </span>
-                    </td>
-                    <td className="p-2 text-center">
-                      {item.validado ? (
-                        <span className="text-green-600 font-bold">✓</span>
-                      ) : (
-                        <span className="text-red-600 font-bold">✗</span>
+                return (
+                  <tr key={idx} className={`transition-colors ${rowClass}`}>
+                    {/* 1. PRODUCTO */}
+                    <td className="px-6 py-4">
+                      <div className="font-bold text-gray-800 text-base">{nombre}</div>
+                      {matchDB && matchDB !== "No encontrado" && (
+                        <div className="text-xs text-gray-500 mt-1 flex items-center gap-1">
+                           <ArrowRight size={12} /> BD: {matchDB}
+                        </div>
+                      )}
+                      {isPriceError && (
+                          <div className="mt-2 inline-flex items-center px-2 py-1 rounded text-xs font-bold bg-red-100 text-red-700 border border-red-200 animate-pulse">
+                            ⚠️ Sobreprecio +{sobreprecioPercent.toFixed(0)}%
+                          </div>
                       )}
                     </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
 
-      {/* Match Results (debug) */}
-      {matchResults && (
-        <details className="bg-gray-50 p-4 rounded-lg border">
-          <summary className="cursor-pointer font-bold text-gray-700">
-            Ver resultados de matching (debug)
-          </summary>
-          <pre className="mt-4 text-xs overflow-auto bg-white p-4 rounded border">
-            {JSON.stringify(matchResults, null, 2)}
-          </pre>
-        </details>
-      )}
+                    {/* 2. CANTIDAD */}
+                    <td className="px-6 py-4 text-center font-mono text-gray-600">
+                      {cantidad}
+                    </td>
+
+                    {/* 3. PRECIO FACTURA */}
+                    <td className={`px-6 py-4 text-right font-bold text-base ${isPriceError ? 'text-red-700' : 'text-gray-900'}`}>
+                      {formatMoney(precioFactura)}
+                    </td>
+
+                    {/* 4. PRECIO BODEGA */}
+                    <td className="px-6 py-4 text-right font-mono text-gray-500">
+                      {precioEsperado > 0 ? formatMoney(precioEsperado) : <span className="text-gray-300 italic">--</span>}
+                    </td>
+
+                    {/* 5. SIMILITUD */}
+                    <td className="px-6 py-4 text-center">
+                      <div className="flex flex-col items-center">
+                        <span className={`px-3 py-1 rounded-full text-xs font-bold shadow-sm ${
+                          similarity >= 0.8 ? 'bg-green-100 text-green-800' : 
+                          similarity >= 0.6 ? 'bg-yellow-100 text-yellow-800' : 
+                          'bg-gray-100 text-gray-800'
+                        }`}>
+                          {formatPercentage(similarity)}
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }

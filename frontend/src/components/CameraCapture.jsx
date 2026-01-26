@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react';
 import Webcam from 'react-webcam';
-import { Camera, Upload, X } from 'lucide-react';
+import { Camera, Upload, X, Loader2 } from 'lucide-react';
 
 export default function CameraCapture({ onImageCapture }) {
   const [showCamera, setShowCamera] = useState(false);
@@ -28,63 +28,52 @@ export default function CameraCapture({ onImageCapture }) {
     }
   };
 
-  // Enviar imagen al backend
+  // ✅ MODIFICADO: Solo prepara el archivo y lo envía al componente Padre (App.jsx)
   const sendToBackend = async () => {
     if (!capturedImage) return;
 
     setUploading(true);
     try {
-      // Convertir base64 a blob
-      const blob = await fetch(capturedImage).then(r => r.blob());
+      // 1. Convertimos la imagen (Base64) a un objeto File real
+      const res = await fetch(capturedImage);
+      const blob = await res.blob();
+      const file = new File([blob], "invoice.jpg", { type: "image/jpeg" });
       
-      // Crear FormData
-      const formData = new FormData();
-      formData.append('file', blob, 'invoice.jpg');
+      // 2. Le pasamos el archivo a App.jsx para que él haga el POST a /process-invoice
+      onImageCapture(file);
 
-      // Llamar al backend
-      const response = await fetch('http://localhost:8000/upload-invoice', {
-        method: 'POST',
-        body: formData,
-      });
-
-      const result = await response.json();
-      
-      if (result.success) {
-        onImageCapture(result.data);
-      } else {
-        alert('Error procesando la imagen');
-      }
     } catch (error) {
-      console.error('Error:', error);
-      alert('Error conectando con el servidor');
-    } finally {
+      console.error('Error preparando imagen:', error);
+      alert('Error al procesar la imagen.');
       setUploading(false);
     }
+    // Nota: No ponemos setUploading(false) al final porque si todo sale bien,
+    // App.jsx cambiará de pantalla y este componente desaparecerá.
   };
 
   return (
-    <div className="w-full max-w-2xl mx-auto p-6">
-      <h2 className="text-2xl font-bold mb-6 text-gray-800">
+    <div className="w-full max-w-2xl mx-auto p-6 animate-fade-in-up">
+      <h2 className="text-2xl font-bold mb-6 text-gray-800 text-center">
         📸 Capturar Factura
       </h2>
 
       {/* Botones de acción */}
       {!capturedImage && !showCamera && (
-        <div className="grid grid-cols-2 gap-4 mb-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
           <button
             onClick={() => setShowCamera(true)}
-            className="flex items-center justify-center gap-2 bg-blue-600 text-white px-6 py-4 rounded-lg hover:bg-blue-700 transition"
+            className="flex flex-col items-center justify-center gap-2 bg-blue-600 text-white px-6 py-8 rounded-xl hover:bg-blue-700 transition shadow-lg hover:shadow-xl"
           >
-            <Camera size={24} />
-            Abrir Cámara
+            <Camera size={32} />
+            <span className="font-medium text-lg">Abrir Cámara</span>
           </button>
 
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="flex items-center justify-center gap-2 bg-green-600 text-white px-6 py-4 rounded-lg hover:bg-green-700 transition"
+            className="flex flex-col items-center justify-center gap-2 bg-indigo-600 text-white px-6 py-8 rounded-xl hover:bg-indigo-700 transition shadow-lg hover:shadow-xl"
           >
-            <Upload size={24} />
-            Subir Archivo
+            <Upload size={32} />
+            <span className="font-medium text-lg">Subir Archivo</span>
           </button>
         </div>
       )}
@@ -100,28 +89,28 @@ export default function CameraCapture({ onImageCapture }) {
 
       {/* Vista de cámara */}
       {showCamera && (
-        <div className="relative">
+        <div className="relative bg-black rounded-lg overflow-hidden shadow-2xl">
           <Webcam
             ref={webcamRef}
             screenshotFormat="image/jpeg"
-            className="w-full rounded-lg"
+            className="w-full"
             videoConstraints={{
-              facingMode: { ideal: "environment" } // Cámara trasera en móviles
+              facingMode: { ideal: "environment" }
             }}
           />
           
-          <div className="flex gap-4 mt-4">
-            <button
-              onClick={capturePhoto}
-              className="flex-1 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700"
-            >
-              📸 Capturar
-            </button>
+          <div className="absolute bottom-4 left-0 right-0 flex justify-center gap-4 px-4">
             <button
               onClick={() => setShowCamera(false)}
-              className="bg-gray-600 text-white px-6 py-3 rounded-lg hover:bg-gray-700"
+              className="bg-white/20 backdrop-blur-sm text-white p-4 rounded-full hover:bg-white/30"
             >
-              <X size={20} />
+              <X size={24} />
+            </button>
+            <button
+              onClick={capturePhoto}
+              className="bg-white text-blue-600 p-4 rounded-full shadow-lg hover:scale-110 transition transform"
+            >
+              <Camera size={32} />
             </button>
           </div>
         </div>
@@ -129,17 +118,17 @@ export default function CameraCapture({ onImageCapture }) {
 
       {/* Vista previa de imagen capturada */}
       {capturedImage && (
-        <div className="space-y-4">
-          <div className="relative">
+        <div className="space-y-6">
+          <div className="relative group">
             <img 
               src={capturedImage} 
               alt="Factura capturada" 
-              className="w-full rounded-lg border-2 border-gray-300"
+              className="w-full rounded-xl shadow-lg border-2 border-white"
             />
             
             <button
               onClick={() => setCapturedImage(null)}
-              className="absolute top-2 right-2 bg-red-600 text-white p-2 rounded-full hover:bg-red-700"
+              className="absolute top-2 right-2 bg-red-600 text-white p-2 rounded-full hover:bg-red-700 opacity-0 group-hover:opacity-100 transition shadow-lg"
             >
               <X size={20} />
             </button>
@@ -148,7 +137,8 @@ export default function CameraCapture({ onImageCapture }) {
           <div className="grid grid-cols-2 gap-4">
             <button
               onClick={() => setCapturedImage(null)}
-              className="bg-gray-600 text-white px-6 py-3 rounded-lg hover:bg-gray-700"
+              disabled={uploading}
+              className="bg-gray-100 text-gray-700 px-6 py-3 rounded-lg hover:bg-gray-200 transition font-medium border border-gray-300"
             >
               Tomar Otra
             </button>
@@ -156,9 +146,15 @@ export default function CameraCapture({ onImageCapture }) {
             <button
               onClick={sendToBackend}
               disabled={uploading}
-              className="bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 disabled:bg-gray-400"
+              className="flex items-center justify-center gap-2 bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 disabled:bg-green-400 transition font-bold shadow-md"
             >
-              {uploading ? '⏳ Procesando...' : '✅ Procesar Factura'}
+              {uploading ? (
+                <>
+                  <Loader2 className="animate-spin" /> Procesando...
+                </>
+              ) : (
+                '✅ Procesar Factura'
+              )}
             </button>
           </div>
         </div>

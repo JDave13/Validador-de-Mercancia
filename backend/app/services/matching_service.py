@@ -1,147 +1,157 @@
-import cohere
 import os
+import re
 import numpy as np
-from typing import List, Dict, Tuple
+from difflib import SequenceMatcher
+from dotenv import load_dotenv
+from google import genai # <--- Importación nueva
+
+load_dotenv()
 
 class MatchingService:
     def __init__(self):
-        api_key = os.getenv("COHERE_API_KEY")
-        if not api_key:
-            raise ValueError("COHERE_API_KEY no configurada")
+        self.api_key = os.getenv("GEMINI_API_KEY")
+        if not self.api_key:
+            raise ValueError("❌ GEMINI_API_KEY no encontrada")
         
-        self.co = cohere.Client(api_key)
-        self.threshold = float(os.getenv("SIMILARITY_THRESHOLD", 0.85))
-    
-    def cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
+        # --- CAMBIO CLAVE: Usamos el Cliente nuevo ---
+        self.client = genai.Client(api_key=self.api_key)
+        self.model = "text-embedding-004"
+
+    def normalize_text(self, text):
         """
-        Calcula similitud coseno entre dos vectores
+        Limpia el 'ruido' común del OCR de facturas.
+        Ej: '1,43FV. CEBOLLA CABEZONA' -> 'CEBOLLA CABEZONA'
         """
-        vec1 = np.array(vec1)
-        vec2 = np.array(vec2)
+        if not text: return ""
+        text = str(text).upper()
+        # 1. Quitar patrones como '1,43FV.' o '01 ' al inicio
+        text = re.sub(r'^[\d,\.]+[A-Z]*\.?\s*', '', text)
+        # 2. Quitar caracteres no alfanuméricos (deja espacios)
+        text = re.sub(r'[^\w\s]', '', text)
+        return text.strip()
+
+    def calculate_fuzzy_score(self, a, b):
+        """Calcula similitud de texto puro (0 a 1)"""
+        if not a or not b: return 0.0
+        return SequenceMatcher(None, a, b).ratio()
+
+    async def get_embeddings(self, texts):
+        """Genera embeddings usando la NUEVA librería google-genai"""
+        if not texts: return []
         
-        dot_product = np.dot(vec1, vec2)
-        norm_a = np.linalg.norm(vec1)
-        norm_b = np.linalg.norm(vec2)
+        # Sanitizar para evitar errores vacíos
+        sanitized = [t if t and t.strip() else "unknown" for t in texts]
+        
+        try:
+            # --- SINTAXIS NUEVA ---
+            result = self.client.models.embed_content(
+                model=self.model,
+                contents=sanitized
+            )
+            # La nueva librería devuelve objetos, extraemos .values
+            return [e.values for e in result.embeddings]
+        except Exception as e:
+            print(f"❌ Error generando embeddings: {e}")
+            # Retornar vectores vacíos para no romper el flujo
+            return [[0.0]*768 for _ in texts]
+
+    def cosine_similarity(self, vec1, vec2):
+        if not vec1 or not vec2: return 0.0
+        # Asegurar que sean arrays de numpy y tipo float
+        v1 = np.array(vec1, dtype=float)
+        v2 = np.array(vec2, dtype=float)
+        
+        dot_product = np.dot(v1, v2)
+        norm_a = np.linalg.norm(v1)
+        norm_b = np.linalg.norm(v2)
         
         if norm_a == 0 or norm_b == 0:
             return 0.0
-        
-        return dot_product / (norm_a * norm_b)
-    
-    async def get_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """
-        Obtiene embeddings de una lista de textos usando Cohere
-        """
-        try:
-            response = self.co.embed(
-                texts=texts,
-                model="embed-multilingual-v3.0",  # Soporta español
-                input_type="search_document"
-            )
-            return response.embeddings
-        except Exception as e:
-            raise Exception(f"Error obteniendo embeddings: {str(e)}")
-    
-    async def find_best_match(
-        self, 
-        invoice_item: str, 
-        purchase_order_items: List[Dict]
-    ) -> Tuple[Dict, float]:
-        """
-        Encuentra el mejor match de un producto de factura en la orden de compra
-        
-        Args:
-            invoice_item: Nombre del producto en la factura
-            purchase_order_items: Lista de items de la orden de compra
-                Formato: [{"producto": "...", "cantidad": ..., "precio": ...}, ...]
-        
-        Returns:
-            Tuple con (mejor_match, similitud)
-        """
-        try:
-            # Preparar textos para embeddings
-            invoice_text = [invoice_item]
-            po_texts = [item["producto"] for item in purchase_order_items]
-            
-            # Obtener embeddings
-            all_texts = invoice_text + po_texts
-            embeddings = await self.get_embeddings(all_texts)
-            
-            # Primer embedding es del item de factura
-            invoice_embedding = embeddings[0]
-            po_embeddings = embeddings[1:]
-            
-            # Calcular similitudes
-            similarities = []
-            for i, po_embedding in enumerate(po_embeddings):
-                similarity = self.cosine_similarity(invoice_embedding, po_embedding)
-                similarities.append({
-                    "item": purchase_order_items[i],
-                    "similarity": similarity
-                })
-            
-            # Ordenar por similitud descendente
-            similarities.sort(key=lambda x: x["similarity"], reverse=True)
-            
-            # Mejor match
-            best_match = similarities[0]
-            
-            return best_match["item"], best_match["similarity"]
-            
-        except Exception as e:
-            raise Exception(f"Error en matching: {str(e)}")
-    
-    async def match_all_items(
-        self,
-        invoice_items: List[Dict],
-        purchase_order_items: List[Dict]
-    ) -> List[Dict]:
-        """
-        Matchea todos los items de una factura con la orden de compra
-        
-        Returns:
-            Lista de matches con formato:
-            [{
-                "invoice_item": {...},
-                "matched_item": {...} o None,
-                "similarity": 0.0-1.0,
-                "status": "MATCHED/UNMATCHED/LOW_CONFIDENCE"
-            }]
-        """
-        results = []
-        
-        for invoice_item in invoice_items:
-            try:
-                best_match, similarity = await self.find_best_match(
-                    invoice_item["producto"],
-                    purchase_order_items
-                )
-                
-                # Determinar status
-                if similarity >= self.threshold:
-                    status = "MATCHED"
-                elif similarity >= 0.70:
-                    status = "LOW_CONFIDENCE"
-                else:
-                    status = "UNMATCHED"
-                
-                results.append({
-                    "invoice_item": invoice_item,
-                    "matched_item": best_match if status != "UNMATCHED" else None,
-                    "similarity": round(similarity, 3),
-                    "status": status
-                })
-                
-            except Exception as e:
-                results.append({
-                    "invoice_item": invoice_item,
-                    "matched_item": None,
-                    "similarity": 0.0,
-                    "status": "ERROR",
-                    "error": str(e)
-                })
-        
-        return results
+        return float(dot_product / (norm_a * norm_b))
 
-# Singleton
+    async def match_all_items(self, invoice_items: list, db_products: list) -> list:
+        """
+        LÓGICA HÍBRIDA:
+        1. Intenta Fuzzy Match (Texto limpio vs Sinónimos). Si > 85%, es un match.
+        2. Si falla, usa Embeddings (IA).
+        """
+        matches = []
+        if not invoice_items: return []
+
+        # Preparamos listas para IA (solo para los que no pasen el filtro fuzzy)
+        items_needing_ai = []
+        indices_needing_ai = []
+
+        print(f"\n🔍 Iniciando Matching Híbrido para {len(invoice_items)} items...")
+
+        # --- PASO 1: FUZZY MATCHING (TEXTO EXACTO) ---
+        for idx, item in enumerate(invoice_items):
+            # Obtener nombre sucio
+            raw_name = (item.get("producto") or item.get("descripcion") or "").strip()
+            # Limpiar nombre (Ej: "1,43FV. CEBOLLA" -> "CEBOLLA")
+            clean_name = self.normalize_text(raw_name)
+            
+            best_fuzzy_score = 0.0
+            best_fuzzy_product = None
+
+            # Buscamos en DB (Nombre + Sinónimos)
+            for db_prod in db_products:
+                candidates = [db_prod['nombre']] + db_prod.get('sinonimos', [])
+                for cand in candidates:
+                    cand_clean = self.normalize_text(cand)
+                    score = self.calculate_fuzzy_score(clean_name, cand_clean)
+                    if score > best_fuzzy_score:
+                        best_fuzzy_score = score
+                        best_fuzzy_product = db_prod
+            
+            # DECISIÓN: Si el texto se parece más del 85%, NO usamos IA.
+            if best_fuzzy_score > 0.85:
+                print(f"   ✅ Fuzzy Match: '{clean_name}' == '{best_fuzzy_product['nombre']}' ({int(best_fuzzy_score*100)}%)")
+                matches.append({
+                    "original": item,
+                    "db_item": best_fuzzy_product,
+                    "score": round(best_fuzzy_score * 100, 2),
+                    "match_found": True,
+                    "method": "Fuzzy"
+                })
+            else:
+                # Si no encontramos match claro, lo mandamos a la cola de IA
+                items_needing_ai.append(clean_name if clean_name else raw_name)
+                indices_needing_ai.append(idx)
+                # Ponemos un placeholder en matches para rellenar luego
+                matches.append(None) 
+
+        # --- PASO 2: AI EMBEDDINGS (SOLO PARA LOS DIFÍCILES) ---
+        if items_needing_ai:
+            print(f"   ⚠️ Consultando IA para {len(items_needing_ai)} items difíciles...")
+            inv_embeddings = await self.get_embeddings(items_needing_ai)
+
+            for i, inv_emb in enumerate(inv_embeddings):
+                original_idx = indices_needing_ai[i]
+                original_item = invoice_items[original_idx]
+                
+                best_ai_score = -1.0
+                best_ai_product = None
+
+                for db_prod in db_products:
+                    if "embedding" in db_prod:
+                        score = self.cosine_similarity(inv_emb, db_prod["embedding"])
+                        if score > best_ai_score:
+                            best_ai_score = score
+                            best_ai_product = db_prod
+                
+                # Umbral de IA 
+                threshold = 0.60
+                is_match = best_ai_score >= threshold
+                
+                matches[original_idx] = {
+                    "original": original_item,
+                    "db_item": best_ai_product if is_match else None,
+                    "score": round(best_ai_score * 100, 2),
+                    "match_found": is_match,
+                    "method": "AI"
+                }
+
+        return matches
+
 matching_service = MatchingService()
