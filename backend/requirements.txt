@@ -1,33 +1,37 @@
 # --- Core Framework ---
-fastapi>=0.112.0
-uvicorn[standard]>=0.30.0
-pydantic>=2.9.0
-pydantic-settings>=2.4.0
-python-multipart>=0.0.9
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.10.0
+pydantic-settings>=2.6.0
+python-multipart>=0.0.12
 python-dotenv>=1.0.1
 
 # --- Base de Datos ---
-pymongo>=4.8.0
+pymongo>=4.9.0
 
-# --- IA y LangChain (Versiones Críticas) ---
-# Es vital que langchain-google-genai sea la última versión para corregir el error 404
-langchain>=0.3.0
-langchain-core>=0.3.0
-langchain-community>=0.3.0
-langchain-google-genai>=2.0.1
-langchain-groq>=0.2.0
+# --- Google AI (CRÍTICO) ---
+# Esta es la NUEVA librería que usa tu matching_service.py (Cliente V1)
+google-genai>=0.3.0
 
-# Librería base de Google (necesaria para la conexión segura)
+# Esta es la VIEJA librería (necesaria para que LangChain funcione internamente)
 google-generativeai>=0.8.3
+
+# --- LangChain (Ecosistema 0.3.x) ---
+langchain>=0.3.7
+langchain-core>=0.3.15
+langchain-community>=0.3.5
+langchain-google-genai>=2.0.1
+langchain-groq>=0.2.1
+
+# --- Cálculo Matemático (Nuevo requerimiento) ---
+# Necesario para los cálculos vectoriales (cosine similarity) en matching_service
+numpy>=1.26.0
 
 # --- Herramientas de Validación (Fuzzy Match) ---
 thefuzz>=0.22.1
-python-Levenshtein>=0.25.1
+python-Levenshtein>=0.26.0
 
 # --- Utilidades Opcionales ---
-requests>=2.32.0
-# Pillow es recomendado si LangChain necesita procesar imágenes internamente
+requests>=2.32.3
+# Para procesamiento de imágenes
 Pillow
-
-# --- Embeddings (Opcionales para búsqueda futura) ---
-cohere>=5.6.0

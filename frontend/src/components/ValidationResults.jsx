@@ -2,7 +2,7 @@ import React from 'react';
 import { CheckCircle, AlertTriangle, AlertOctagon, FileText, Package, ArrowRight } from 'lucide-react';
 
 export default function ValidationResults({ validation, matchResults }) {
-  // 1. Protección inicial
+  // 1. Protección inicial por si no llegan datos aún
   if (!validation) {
     return (
       <div className="flex flex-col items-center justify-center p-12 text-gray-500 bg-gray-50 rounded-lg border-2 border-dashed border-gray-200">
@@ -16,17 +16,16 @@ export default function ValidationResults({ validation, matchResults }) {
   const { 
     proveedor = 'Desconocido', 
     desviacion_porcentual = 0,
-    status = 'ROJO' // Leemos el status que viene del Backend (VERDE, AMARILLO, ROJO)
+    status = 'ROJO' 
   } = validation;
 
   const totales = validation.totales || validation.totals || { esperado: 0, facturado: 0, diferencia: 0 };
+  
+  // Usamos matchResults si existe (nuestro nuevo formato híbrido), o fallback a validation.items
   const items = matchResults?.length > 0 ? matchResults : (validation.items || []);
 
   // 3. Mapeo de Estados (Backend -> Frontend)
-  // Backend envía: "VERDE", "AMARILLO", "ROJO"
-  // Frontend usa claves: "APROBADA", "AMARILLO", "ALERTA"
-  
-  let currentStatusKey = 'ALERTA'; // Default por seguridad
+  let currentStatusKey = 'ALERTA'; 
 
   if (status === 'VERDE') {
       currentStatusKey = 'APROBADA';
@@ -36,7 +35,7 @@ export default function ValidationResults({ validation, matchResults }) {
       currentStatusKey = 'ALERTA'; // ROJO
   }
 
-  // 4. Configuración visual
+  // 4. Configuración visual según estado
   const statusConfig = {
     APROBADA: {
       theme: 'bg-green-600 border-green-600',
@@ -66,12 +65,16 @@ export default function ValidationResults({ validation, matchResults }) {
     return isNaN(num) ? '$0' : `$ ${num.toLocaleString('es-CO')}`;
   };
 
+  // --- CORRECCIÓN CRÍTICA ---
   const formatPercentage = (val) => {
     const num = Number(val);
-    // Si viene 0.05 es 5%, si viene 5.0 es 5%
-    // NOTA: Cambiado Math.round por toFixed(2) para ver decimales (3.80% en vez de 4%)
-    const percent = Math.abs(num) <= 1 && num !== 0 ? num * 100 : num;
-    return `${Number(percent).toFixed(2)}%`;
+    if (isNaN(num)) return "0.00%";
+    
+    // Si el backend envía 0.5, mostramos 0.50%.
+    // No multiplicamos por 100 aquí porque el cálculo ya viene hecho o es un ratio directo.
+    // Ajusta esto si tu backend envía 0.005 para representar 0.5%.
+    // Asumiendo que backend envía el numero entero/decimal listo:
+    return `${num.toFixed(2)}%`;
   };
 
   return (
@@ -92,13 +95,14 @@ export default function ValidationResults({ validation, matchResults }) {
               <p className="text-sm opacity-75 mt-1">{config.subtext}</p>
             </div>
           </div>
+          
           <div className="text-right bg-white/20 p-4 rounded-lg backdrop-blur-sm min-w-[150px]">
             <p className="text-xs uppercase tracking-widest opacity-80 mb-1">Desviación Total</p>
             <p className="text-3xl font-bold">{formatPercentage(desviacion_porcentual)}</p>
           </div>
         </div>
 
-        {/* Totales - Siempre visibles */}
+        {/* Totales - Siempre visibles en blanco */}
         <div className="bg-white text-gray-800 p-6 grid grid-cols-1 md:grid-cols-3 gap-4 divide-y md:divide-y-0 md:divide-x divide-gray-100">
           <div className="text-center p-2">
             <p className="text-gray-500 text-sm mb-1 uppercase tracking-wider">Esperado (Bodega)</p>
@@ -142,10 +146,10 @@ export default function ValidationResults({ validation, matchResults }) {
                 const precioFactura = Number(item.unit_price || 0);
                 const precioEsperado = Number(item.expected_price || 0);
                 const cantidad = item.quantity || 0;
-                const similarity = item.similarity || item.score || 0;
+                // Manejo seguro del score de similitud
+                const similarity = item.similarity ?? item.score ?? 0;
                 
-                // LÓGICA CRÍTICA PARA FILAS (Individual):
-                // Aquí sí mantenemos la lógica visual de "alerta" por ítem individual
+                // Cálculo de alerta visual por fila
                 let sobreprecioPercent = 0;
                 let isPriceError = false;
 
@@ -167,7 +171,7 @@ export default function ValidationResults({ validation, matchResults }) {
                       <div className="font-bold text-gray-800 text-base">{nombre}</div>
                       {matchDB && matchDB !== "No encontrado" && (
                         <div className="text-xs text-gray-500 mt-1 flex items-center gap-1">
-                           <ArrowRight size={12} /> BD: {matchDB}
+                           <ArrowRight size={12} /> Encontrado como: {matchDB}
                         </div>
                       )}
                       {isPriceError && (
@@ -200,7 +204,10 @@ export default function ValidationResults({ validation, matchResults }) {
                           similarity >= 0.6 ? 'bg-yellow-100 text-yellow-800' : 
                           'bg-gray-100 text-gray-800'
                         }`}>
-                          {formatPercentage(similarity)}
+                          {/* Visualización de score (0.98 -> 98.00%) */}
+                          {similarity <= 1 
+                            ? (similarity * 100).toFixed(2) + "%" 
+                            : similarity.toFixed(2) + "%"}
                         </span>
                       </div>
                     </td>
