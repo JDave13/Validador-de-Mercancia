@@ -1,6 +1,5 @@
 # Prueba Técnica Country Club Ejecutivos
 
-**Participante:** Juan David Cortés Amador
 
 ---
 
